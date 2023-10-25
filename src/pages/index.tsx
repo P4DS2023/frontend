@@ -4,230 +4,36 @@ import useWebSocket from "react-use-websocket";
 import { Socket, io } from "socket.io-client";
 import { DefaultEventsMap } from "socket.io/dist/typed-events";
 import { set } from "zod";
+import { RecordingModal } from "~/components/recording_modal";
 
 interface Message {
-  message: string;
   name: string;
+  message: string;
 }
 
-enum RecodingState {
-  NOT_STARTED,
-  WAITING_FOR_PERMISSION,
-  PERMISSION_DENIED,
-  RECORDING,
-  PROCESSING,
-  COMPLETED,
-  ERROR,
+interface EnterInputButtonProps {
+  onRecordingSubmitted: (transcript: string) => void;
 }
 
-interface RecordingSheetProps {
-  onSheetClosed: () => void;
-}
+const EnterInputButton = ({ onRecordingSubmitted }: EnterInputButtonProps) => {
+  const [recodingModalOpen, setRecordingModalOpen] = useState(false);
 
-interface TranscriptResponse {
-  transcript: string;
-  isFinal: boolean;
-  speechClarity: number;
-}
-
-const RecordingSheet = ({ onSheetClosed }: RecordingSheetProps) => {
-  const [recordingState, setRecordingState] = useState(
-    RecodingState.NOT_STARTED,
-  );
-  const [currentTranscript, setCurrentTranscript] =
-    useState<TranscriptResponse | null>();
-  const [transcriptHistory, setTranscriptHistory] = useState<
-    TranscriptResponse[]
-  >([]);
-
-  const transcribeText = useMemo(() => {
-    const historyText = transcriptHistory
-      .map((transcript) => transcript.transcript)
-      .join(". ");
-    return historyText + (currentTranscript?.transcript ?? "");
-  }, [transcriptHistory, currentTranscript]);
-
-  const averageClarity = useMemo(() => {
-    const clarityScores = [0.5, ...transcriptHistory.map(
-      (transcript) => transcript.speechClarity,
-    )];
-    const totalClarity = clarityScores.reduce((a, b) => a + b, 0);
-    return totalClarity / clarityScores.length;
-  }, [transcriptHistory]);
-
-  let socket: Socket<DefaultEventsMap, DefaultEventsMap> | null = null;
-  let mediaRecorder: MediaRecorder | null = null;
-  let mediaStream: MediaStream | null = null;
-
-  async function startRecording() {
-    // Reset state
-    setCurrentTranscript(null);
-    setTranscriptHistory([]);
-    setRecordingState(RecodingState.WAITING_FOR_PERMISSION);
-
-    try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      });
-
-      if (!mediaStream) {
-        return setRecordingState(RecodingState.ERROR);
-      }
-
-      mediaRecorder = new MediaRecorder(mediaStream, {
-        mimeType: "audio/webm",
-      });
-
-      socket = io("http://localhost:3001");
-      socket.on("connect", () => {
-        console.log("connected");
-      });
-
-      socket.on("transcript", (transcriptResponse: TranscriptResponse) => {
-        console.log("Received result of clarity score: " + transcriptResponse.speechClarity);
-        if (transcriptResponse.isFinal) {
-          setTranscriptHistory((prevTranscriptHistory) => [
-            ...prevTranscriptHistory,
-            transcriptResponse,
-          ]);
-          setCurrentTranscript(null);
-        } else {
-          setCurrentTranscript(transcriptResponse);
-        }
-      });
-
-      socket.on("disconnect", () => {
-        console.log("disconnected");
-      });
-
-      mediaRecorder.addEventListener("dataavailable", (event) => {
-        if (!socket) {
-          throw new Error("Socket not initialized");
-        }
-        socket.emit("audio", event.data);
-      });
-      mediaRecorder.start(1000);
-      setRecordingState(RecodingState.RECORDING);
-    } catch (error) {
-      console.error(error);
-      setRecordingState(RecodingState.PERMISSION_DENIED);
+  function onSheetClosed(transcript: string | null) {
+    setRecordingModalOpen(false);
+    if (transcript !== null) {
+      onRecordingSubmitted(transcript);
     }
   }
-
-  async function stopRecording() {
-    mediaRecorder?.stop();
-    mediaStream?.getTracks().forEach((track) => track.stop());
-
-    mediaRecorder = null;
-    mediaStream = null;
-
-    setRecordingState(RecodingState.PROCESSING);
-    // keep socket open till we get the final transcript
-    while (currentTranscript != null) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    socket?.disconnect();
-    setRecordingState(RecodingState.COMPLETED);
-  }
-
-  return (
-    <div className="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50">
-      <div className="relative rounded-lg bg-white p-4">
-        <button
-          className="absolute -right-5 -top-5 h-10 w-10 rounded-full bg-red-500 p-2"
-          onClick={onSheetClosed}
-        >
-          X
-        </button>
-        <div className="text-xl">Please Record Your Response</div>
-
-        {recordingState === RecodingState.NOT_STARTED && (
-          <button
-            className="rounded-lg bg-green-500 p-2"
-            onClick={startRecording}
-          >
-            Record
-          </button>
-        )}
-        {recordingState === RecodingState.WAITING_FOR_PERMISSION && (
-          <div>Waiting for permission</div>
-        )}
-        {recordingState === RecodingState.PERMISSION_DENIED && (
-          <div>Permission denied</div>
-        )}
-
-        {recordingState === RecodingState.RECORDING && (
-          <div>
-            <div className="flex flex-row">
-              <div className="w-1/2">
-                <textarea
-                  className="h-40 w-full p-2"
-                  value={transcribeText}
-                  readOnly
-                />
-              </div>
-              <div className="flex flex-col h-40 w-1/2 p-2">
-                <div>Speech Clarity: {averageClarity}</div>
-                <div className="grow bg-red-500"/>
-              </div>
-            </div>
-            <button
-              className="rounded-lg bg-red-500 p-2"
-              onClick={stopRecording}
-            >
-              Stop Recording
-            </button>
-          </div>
-        )}
-
-        {recordingState === RecodingState.PROCESSING && <div>Processing</div>}
-
-        {recordingState === RecodingState.COMPLETED && (
-          <div>
-            <div className="flex flex-row">
-              <div className="w-1/2">
-                <textarea
-                  className="h-40 w-full p-2"
-                  value={transcribeText}
-                  readOnly
-                />
-              </div>
-              <div className="h-40 w-1/2 bg-gray-200 p-2">Placeholder</div>
-            </div>
-            <div className="flex flex-row">
-              <button
-                className="rounded-lg bg-green-500 p-2"
-                onClick={startRecording}
-              >
-                Record Again
-              </button>
-              <button
-                className="rounded-lg bg-blue-500 p-2"
-                onClick={onSheetClosed}
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-const Recorder = () => {
-  const [sheetOpen, setSheetOpen] = useState(false);
 
   return (
     <div className="relative">
       <button
-        className="rounded-full bg-red-500 p-2"
-        onClick={() => setSheetOpen(true)}
-      ></button>
-      {sheetOpen && (
-        <RecordingSheet onSheetClosed={() => setSheetOpen(false)} />
-      )}
+        className="rounded bg-green-500 m-4 p-4 text-white font-bold"
+        onClick={() => setRecordingModalOpen(true)}
+      >
+        Add Input
+      </button>
+      {recodingModalOpen && <RecordingModal onSheetClosed={onSheetClosed} />}
     </div>
   );
 };
@@ -377,12 +183,9 @@ export default function Home() {
         </ul>
         <div className="grow" />
 
-        <ChatInput
-          onSendMessage={postMessage}
-          isInputActive={inputActive}
-          setIsInputActive={setInputActive}
-        />
-        <Recorder />
+        {(inputActive) && (
+          <EnterInputButton onRecordingSubmitted={postMessage} />
+        )}
       </main>
     </>
   );
